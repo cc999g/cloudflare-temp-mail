@@ -1,0 +1,31 @@
+# ============================================================
+# cloudflare_temp_email 后端 Worker 部署配置模板
+# 部署方式：Cloudflare Dashboard 网页端创建 Worker 时参考，
+# 或在本地用 wrangler 部署前替换占位符。
+# 完整配置项以原项目 README 为准：
+#   https://github.com/dreamhunter2333/cloudflare_temp_email
+# ============================================================
+name = "temp-mail-api"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+
+# D1 数据库绑定（先在 Dashboard 创建 D1，再填入 ID）
+[[d1_databases]]
+binding = "DB"
+database_name = "temp-mail-db"
+database_id = "<你的D1数据库ID>"
+
+# 邮件路由（Email Routing Catch-all 指向本 Worker 时启用）
+[email]
+binding = "MAIL"
+
+# 环境变量示例（按原项目 README 填写）
+[vars]
+# 域名列表（必须是主域名 apex，例如 yourdomain.com）
+DOMAINS = "<你的域名>"
+# 前端地址（用于 CORS 等）
+FRONTEND_BASE_URL = "https://mail.<你的域名>"
+# 管理后台路径与密码（按原项目说明设置）
+ADMIN = "<管理密码>"
+# 其他配置项（needAuth / enableUserCreateEmail / randomSubdomainDomains 等）
+# 见原项目 README：https://github.com/dreamhunter2333/cloudflare_temp_email

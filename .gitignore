@@ -1,0 +1,12 @@
+# 本地状态与凭据，绝不上传
+.wrangler/
+node_modules/
+.env
+.env.*
+!.env.example
+wrangler.local.toml
+*.local
+
+# 测试/调试产物
+*.bin
+trace.txt
