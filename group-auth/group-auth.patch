@@ -1,0 +1,290 @@
+diff --git a/frontend/src/api/index.js b/frontend/src/api/index.js
+index 48807a5..28abaa1 100644
+--- a/frontend/src/api/index.js
++++ b/frontend/src/api/index.js
+@@ -14,7 +14,7 @@ const API_BASE = APP_CONFIG.API_BASE || "";
+ const {
+     loading, auth, jwt, settings, openSettings,
+     userOpenSettings, userSettings, announcement,
+-    showAuth, adminAuth, showAdminAuth, userJwt
++    showAuth, adminAuth, tgAuth, showAdminAuth, userJwt
+ } = useGlobalState();
+ 
+ const instance = axios.create({
+@@ -55,6 +55,8 @@ const apiFetch = async (path, options = {}) => {
+         if (customAuthHeader) headers['x-custom-auth'] = customAuthHeader;
+         const adminAuthHeader = safeHeaderValue(adminAuth.value);
+         if (adminAuthHeader) headers['x-admin-auth'] = adminAuthHeader;
++        const tgAuthHeader = safeHeaderValue(tgAuth.value);
++        if (tgAuthHeader) headers['x-tg-auth'] = tgAuthHeader;
+         const authorizationHeader = safeBearerHeader(jwt.value);
+         if (authorizationHeader) headers['Authorization'] = authorizationHeader;
+ 
+diff --git a/frontend/src/store/index.js b/frontend/src/store/index.js
+index 9aa2c9b..7aee339 100644
+--- a/frontend/src/store/index.js
++++ b/frontend/src/store/index.js
+@@ -85,6 +85,7 @@ export const useGlobalState = createGlobalState(
+         const showAdminAuth = ref(false);
+         const auth = useStorage('auth', '');
+         const adminAuth = useStorage('adminAuth', '');
++        const tgAuth = useStorage('tgAuth', ''); // Telegram Login Widget 认证数据（群聊鉴权）
+         const jwt = useStorage('jwt', '');
+         const addressPassword = useSessionStorage('addressPassword', '');
+         const adminTab = useSessionStorage('adminTab', "account");
+@@ -130,6 +131,7 @@ export const useGlobalState = createGlobalState(
+         });
+         const showAdminPage = computed(() =>
+             !!adminAuth.value
++            || !!tgAuth.value
+             || userSettings.value.is_admin
+             || openSettings.value.disableAdminPasswordCheck
+         );
+@@ -161,6 +163,7 @@ export const useGlobalState = createGlobalState(
+             auth,
+             jwt,
+             adminAuth,
++            tgAuth,
+             showAdminAuth,
+             adminTab,
+             adminMailTabAddress,
+diff --git a/frontend/src/views/Admin.vue b/frontend/src/views/Admin.vue
+index 1c7f2bb..997c80b 100644
+--- a/frontend/src/views/Admin.vue
++++ b/frontend/src/views/Admin.vue
+@@ -35,7 +35,7 @@ import RedeemCodes from './admin/RedeemCodes.vue';
+ const {
+   adminAuth, showAdminAuth, adminTab, loading,
+   globalTabplacement, showAdminPage, userSettings,
+-  openSettings
++  openSettings, tgAuth
+ } = useGlobalState()
+ const message = useMessage()
+ const router = useRouter()
+@@ -48,6 +48,7 @@ const SendMail = defineAsyncComponent(() => {
+ 
+ const cfToken = ref('')
+ const turnstileRef = ref(null)
++const tgLoginEl = ref(null)
+ 
+ const authFunc = async () => {
+   try {
+@@ -71,6 +72,7 @@ const showLogoutModal = ref(false)
+ const handleLogout = async () => {
+   // 清空管理员认证
+   adminAuth.value = '';
++  tgAuth.value = ''; // 同时清除 Telegram 群登录态
+   // 重置管理员相关状态
+   showAdminAuth.value = false;
+   adminTab.value = 'account';
+@@ -103,6 +105,28 @@ onMounted(async () => {
+   if (!openSettings.value.fetched) await api.getOpenSettings(message);
+   // make sure user_id is fetched
+   if (!userSettings.value.user_id) await api.getUserSettings(message);
++
++  // Telegram 群聊登录（可选，需配置 TELEGRAM_BOT_USERNAME + AUTH_GROUP_ID）
++  // 登录成功后存 tgAuth，后续 admin/bot 接口自动带 x-tg-auth 头
++  window.__onTgAuth = (user) => {
++    if (user && user.id) {
++      tgAuth.value = JSON.stringify(user);
++      location.reload();
++    }
++  };
++  await nextTick();
++  const el = tgLoginEl.value;
++  if (el && openSettings.value.tgBotUsername) {
++    el.innerHTML = '';
++    const s = document.createElement('script');
++    s.async = true;
++    s.src = 'https://telegram.org/js/telegram-widget.js?22';
++    s.setAttribute('data-telegram-login', openSettings.value.tgBotUsername);
++    s.setAttribute('data-size', 'large');
++    s.setAttribute('data-onauth', 'window.__onTgAuth(user)');
++    s.setAttribute('data-request-access', 'write');
++    el.appendChild(s);
++  }
+ })
+ </script>
+ 
+@@ -111,6 +135,7 @@ onMounted(async () => {
+     <n-modal v-model:show="showAdminPasswordModal" :closable="false" :closeOnEsc="false" :maskClosable="false"
+       preset="dialog" :title="t('accessHeader')">
+       <p>{{ t('accessTip') }}</p>
++      <div v-if="openSettings.tgBotUsername && !tgAuth" ref="tgLoginEl" style="margin: 10px 0; text-align:center"></div>
+       <n-input v-model:value="tmpAdminAuth" type="password" show-password-on="click" @keyup.enter="authFunc" />
+       <Turnstile ref="turnstileRef" v-if="openSettings.enableGlobalTurnstileCheck" v-model:value="cfToken" />
+       <template #action>
+diff --git a/worker/src/commom_api.ts b/worker/src/commom_api.ts
+index e89ca00..e727b0b 100644
+--- a/worker/src/commom_api.ts
++++ b/worker/src/commom_api.ts
+@@ -49,6 +49,7 @@ api.get('/open_api/settings', async (c) => {
+         "isS3Enabled": isS3Enabled(c),
+         "enableSendMail": isAnySendMailEnabled(c),
+         "version": CONSTANTS.VERSION,
++        "tgBotUsername": utils.getStringValue(c.env.TELEGRAM_BOT_USERNAME),
+         "showGithub": !utils.getBooleanValue(c.env.DISABLE_SHOW_GITHUB),
+         "showGithubForUser": !utils.getBooleanValue(c.env.DISABLE_SHOW_GITHUB_FOR_USER),
+         "disableAdminPasswordCheck": utils.getBooleanValue(c.env.DISABLE_ADMIN_PASSWORD_CHECK),
+diff --git a/worker/src/i18n/en.ts b/worker/src/i18n/en.ts
+index 98f0d8b..f02a8a6 100644
+--- a/worker/src/i18n/en.ts
++++ b/worker/src/i18n/en.ts
+@@ -184,6 +184,7 @@ const messages: LocaleMessages = {
+     TgSelectLangMsg: "Please select language:",
+     TgNoPermissionViewMailMsg: "No permission to view this mail",
+     TgBotTokenRequiredMsg: "TELEGRAM_BOT_TOKEN is required",
++    TgAuthDeniedMsg: "Only members of the authorized Telegram group can access this",
+     TgLangFeatureDisabledMsg: "Language setting feature is disabled. System default language is used.",
+     TgAiExtractResultMsg: "AI extracted",
+     TgAiExtractAuthCodeMsg: "Verification code",
+diff --git a/worker/src/i18n/type.ts b/worker/src/i18n/type.ts
+index 494c5f1..04d9026 100644
+--- a/worker/src/i18n/type.ts
++++ b/worker/src/i18n/type.ts
+@@ -182,6 +182,7 @@ export type LocaleMessages = {
+     TgSelectLangMsg: string
+     TgNoPermissionViewMailMsg: string
+     TgBotTokenRequiredMsg: string
++    TgAuthDeniedMsg: string
+     TgLangFeatureDisabledMsg: string
+     TgAiExtractResultMsg: string
+     TgAiExtractAuthCodeMsg: string
+diff --git a/worker/src/i18n/zh.ts b/worker/src/i18n/zh.ts
+index c723be6..9acceaa 100644
+--- a/worker/src/i18n/zh.ts
++++ b/worker/src/i18n/zh.ts
+@@ -184,6 +184,7 @@ const messages: LocaleMessages = {
+     TgSelectLangMsg: "请选择语言:",
+     TgNoPermissionViewMailMsg: "无权查看此邮件",
+     TgBotTokenRequiredMsg: "需要设置 TELEGRAM_BOT_TOKEN",
++    TgAuthDeniedMsg: "仅授权群成员可访问此接口",
+     TgLangFeatureDisabledMsg: "语言设置功能已禁用，使用系统默认语言",
+     TgAiExtractResultMsg: "AI 提取",
+     TgAiExtractAuthCodeMsg: "验证码",
+diff --git a/worker/src/telegram_api/index.ts b/worker/src/telegram_api/index.ts
+index c3b1aff..804926d 100644
+--- a/worker/src/telegram_api/index.ts
++++ b/worker/src/telegram_api/index.ts
+@@ -6,6 +6,7 @@ import { newTelegramBot, initTelegramBotCommands, sendMailToTelegram } from './t
+ import settings from './settings'
+ import miniapp from './miniapp'
+ import i18n from '../i18n'
++import { verifyTgGroupMember } from '../utils'
+ 
+ export const api = new Hono<HonoCustomType>();
+ export { sendMailToTelegram }
+@@ -18,6 +19,13 @@ api.use("/telegram/*", async (c, next) => {
+     if (!c.env.KV) {
+         return c.text(msgs.KVNotAvailableMsg, 400);
+     }
++    // 群聊鉴权（默认）：配置 AUTH_GROUP_ID 后，bot 后台/小程序接口要求授权群成员
++    //（Telegram 服务器回调的 /telegram/webhook 除外，原地址 token 等校验继续生效）
++    if (c.env.AUTH_GROUP_ID && c.req.path !== "/telegram/webhook") {
++        if (!(await verifyTgGroupMember(c, c.req.raw.headers.get("x-tg-auth")))) {
++            return c.text(msgs.TgAuthDeniedMsg, 401);
++        }
++    }
+     return await next();
+ });
+ 
+diff --git a/worker/src/types.d.ts b/worker/src/types.d.ts
+index 83b0f89..24605ef 100644
+--- a/worker/src/types.d.ts
++++ b/worker/src/types.d.ts
+@@ -107,6 +107,10 @@ type Bindings = {
+ 
+     // telegram config
+     TELEGRAM_BOT_TOKEN: string
++    TELEGRAM_BOT_USERNAME: string | undefined
++
++    // TG group auth (optional)
++    AUTH_GROUP_ID: string | undefined
+     TG_MAX_ADDRESS: number | undefined
+     TG_BOT_INFO: string | object | undefined
+     TG_ALLOW_USER_LANG: string | boolean | undefined
+diff --git a/worker/src/utils.ts b/worker/src/utils.ts
+index 68b4f7c..3379b80 100644
+--- a/worker/src/utils.ts
++++ b/worker/src/utils.ts
+@@ -334,6 +334,51 @@ export const checkIsAdmin = (c: Context<HonoCustomType>): boolean => {
+     return !!adminAuth && adminPasswords.includes(adminAuth);
+ }
+ 
++// ---------- TG 群聊鉴权（可选，默认优先于 admin 密码） ----------
++// 请求头 x-tg-auth 携带 Telegram Login Widget 认证数据 JSON：
++//   {"id":123,"first_name":"..","auth_date":1700000000,"hash":".."}
++// 校验：HMAC-SHA256(data_check_string, sha256(TELEGRAM_BOT_TOKEN)) == hash
++//      且该 user 是 AUTH_GROUP_ID 授权群成员（creator/administrator/member/restricted）
++export const verifyTgGroupMember = async (c: Context<HonoCustomType>, tgAuthRaw: string | null): Promise<boolean> => {
++    if (!tgAuthRaw) return false;
++    if (!c.env.AUTH_GROUP_ID || !c.env.TELEGRAM_BOT_TOKEN) return false;
++    try {
++        let data: Record<string, string> = {};
++        if (typeof tgAuthRaw === "string") {
++            const parsed = JSON.parse(tgAuthRaw);
++            data = parsed && typeof parsed === "object" ? parsed : {};
++        }
++        const id = String(data.id || "");
++        const authDate = String(data.auth_date || "");
++        const hash = String(data.hash || "");
++        if (!id || !authDate || !hash) return false;
++        const fields: string[] = [];
++        for (const key of Object.keys(data).sort()) {
++            if (key === "hash") continue;
++            fields.push(`${key}=${String(data[key])}`);
++        }
++        const dataCheckString = fields.join("\n");
++        const secretKey = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(c.env.TELEGRAM_BOT_TOKEN));
++        const key = await crypto.subtle.importKey("raw", secretKey, { name: "HMAC" }, false, ["sign"]);
++        const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(dataCheckString));
++        const sigHex = [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("");
++        if (sigHex !== hash) return false;
++        // auth_date 超过 1 天视为过期
++        if (Math.floor(Date.now() / 1000) - Number(authDate) > 86400) return false;
++        const res = await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/getChatMember`, {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify({ chat_id: Number(c.env.AUTH_GROUP_ID), user_id: Number(id) }),
++        }).then(r => r.json()) as { ok?: boolean; result?: { status?: string } };
++        if (!res.ok || !res.result) return false;
++        const st = res.result.status;
++        return st === "creator" || st === "administrator" || st === "member" || st === "restricted";
++    } catch (e) {
++        console.error("Failed to verify TG group auth", e);
++        return false;
++    }
++}
++
+ export const getEnvStringList = (value: string | string[] | undefined): string[] => {
+     if (!value) {
+         return [];
+diff --git a/worker/src/worker.ts b/worker/src/worker.ts
+index b339a43..8caea31 100644
+--- a/worker/src/worker.ts
++++ b/worker/src/worker.ts
+@@ -16,7 +16,7 @@ import i18n from './i18n';
+ import { ErrorCode } from './error_codes';
+ import { email } from './email';
+ import { scheduled } from './scheduled';
+-import { getPasswords, getBooleanValue, getDomains, checkIsAdmin, getEnvStringList } from './utils';
++import { getPasswords, getBooleanValue, getDomains, checkIsAdmin, getEnvStringList, verifyTgGroupMember } from './utils';
+ import { checkAccessControl } from './ip_blacklist';
+ 
+ const API_PATHS = [
+@@ -247,6 +247,15 @@ app.use('/admin/*', async (c, next) => {
+ 		console.error("Failed to check admin API IP whitelist", e);
+ 	}
+ 
++	// TG 群聊鉴权（默认优先）：授权群成员（Telegram Login Widget 认证数据）即管理员
++	// 配置 AUTH_GROUP_ID 后启用；校验失败/未带则继续尝试原密码/JWT 鉴权（保留原有方式）
++	if (c.env.AUTH_GROUP_ID && c.req.raw.headers.get("x-tg-auth")) {
++		if (await verifyTgGroupMember(c, c.req.raw.headers.get("x-tg-auth"))) {
++			await next();
++			return;
++		}
++	}
++
+ 	// check header x-admin-auth
+ 	if (checkIsAdmin(c)) {
+ 		await next();

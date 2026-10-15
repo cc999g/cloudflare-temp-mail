@@ -46,6 +46,59 @@
 - 生成随机邮箱 → 用任意邮箱发信测试收件
 - **管理员登录走 `/admin` 路径**（普通登录是用户邮箱，会报「用户不存在」）
 
+## 🔐 群聊鉴权改造（可选，默认关闭）
+
+把「管理后台 + Telegram Bot 后台」接入 **Telegram 授权群鉴权**（与 TG 网盘 Bot 同一套群聊鉴权模式）：
+
+| 项 | 说明 |
+|---|---|
+| 管理后台 `/admin/*` | 授权群成员（Telegram 登录）**默认放行**；原 ADMIN 密码 / JWT 仍保留兜底 |
+| Bot 后台 `/telegram/*`（除 webhook） | 配置后仅授权群成员可调用（小程序/绑定邮箱等） |
+| 网页邮箱 | **保持公开**，不受影响 |
+| 兑换码 / needAuth / 地址密码 | 全部保留 |
+
+### 配置（Worker 环境变量）
+
+| 变量 | 说明 |
+|---|---|
+| `AUTH_GROUP_ID` | 授权群 ID（如 `-1003442871576`）；**不填=不启用群鉴权** |
+| `TELEGRAM_BOT_TOKEN` | 必须与现有 bot 一致（群成员校验依赖它调 `getChatMember`） |
+| `TELEGRAM_BOT_USERNAME` | bot 用户名（如 `xxx_bot`），管理后台登录框会显示「Telegram 登录」按钮 |
+
+### 应用方法（基于原项目最新 main 分支）
+
+```bash
+# 1. 克隆原项目最新代码
+git clone https://github.com/dreamhunter2333/cloudflare_temp_email.git
+cd cloudflare_temp_email
+
+# 2. 应用本仓库附带的 patch
+git apply ../cloudflare-temp-mail/group-auth/group-auth.patch
+
+# 3. 按原项目 README 部署 Worker（tsc/wrangler 构建）
+#    前端重新 vite build 后部署 Pages
+```
+
+### 改动内容（patch 清单）
+
+- `worker/src/utils.ts`：新增 `verifyTgGroupMember`（Telegram Login Widget HMAC 验签 + `getChatMember` 群成员校验）
+- `worker/src/worker.ts`：`/admin/*` 中间件加入群鉴权分支（优先，失败回退密码/JWT）
+- `worker/src/telegram_api/index.ts`：`/telegram/*` 中间件加群校验（`/telegram/webhook` 除外）
+- `worker/src/commom_api.ts` / `types.d.ts`：新增 `AUTH_GROUP_ID`、`TELEGRAM_BOT_USERNAME` 配置与 `tgBotUsername` 下发
+- `frontend/src/views/Admin.vue`：管理后台登录框新增「Telegram 登录」按钮（官方 Login Widget）
+- `frontend/src/store/index.js` / `api/index.js`：`tgAuth` 状态 + 请求自动带 `x-tg-auth` 头
+- `worker/src/i18n/type.ts|en.ts|zh.ts`：新增 `TgAuthDeniedMsg` 提示
+
+### 工作原理
+
+```
+管理后台打开 → 登录框出现 [Telegram 登录]（仅配置了 TELEGRAM_BOT_USERNAME）
+  用户点登录 → Telegram 官方 Login Widget 返回 {id, auth_date, hash}
+  前端存 tgAuth → 所有请求带 x-tg-auth 头
+  Worker: HMAC 验签（sha256(bot_token)）→ getChatMember(AUTH_GROUP_ID, id)
+  → 群成员（creator/administrator/member）放行；非成员/未登录 → 回退原密码/JWT
+```
+
 ## 🐛 常见问题（踩坑记录）
 
 | 现象 | 原因 | 解决 |
@@ -63,6 +116,8 @@
 ```
 ├── README.md          # 本文件（部署指南 + 踩坑记录）
 ├── wrangler.toml      # Worker 部署配置模板（占位符）
+├── group-auth/
+│   └── group-auth.patch  # 群聊鉴权改造 patch（应用方法见上文「群聊鉴权改造」）
 └── .gitignore
 ```
 
