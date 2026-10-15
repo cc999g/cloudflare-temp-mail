@@ -53,8 +53,8 @@
 | 项 | 说明 |
 |---|---|
 | 管理后台 `/admin/*` | 授权群成员（Telegram 登录）**默认放行**；原 ADMIN 密码 / JWT 仍保留兜底 |
-| Bot 后台 `/telegram/*`（除 webhook） | 配置后仅授权群成员可调用（小程序/绑定邮箱等） |
-| 网页邮箱 | **保持公开**，不受影响 |
+| Bot 设置后台 `/admin/telegram/*` | 属于 `/admin/*` 范围，同样受群鉴权保护 |
+| 网页邮箱 & TG 小程序用户功能 | **保持公开**，不受影响 |
 | 兑换码 / needAuth / 地址密码 | 全部保留 |
 
 ### 配置（Worker 环境变量）
@@ -83,11 +83,11 @@ git apply ../cloudflare-temp-mail/group-auth/group-auth.patch
 
 - `worker/src/utils.ts`：新增 `verifyTgGroupMember`（Telegram Login Widget HMAC 验签 + `getChatMember` 群成员校验）
 - `worker/src/worker.ts`：`/admin/*` 中间件加入群鉴权分支（优先，失败回退密码/JWT）
-- `worker/src/telegram_api/index.ts`：`/telegram/*` 中间件加群校验（`/telegram/webhook` 除外）
 - `worker/src/commom_api.ts` / `types.d.ts`：新增 `AUTH_GROUP_ID`、`TELEGRAM_BOT_USERNAME` 配置与 `tgBotUsername` 下发
 - `frontend/src/views/Admin.vue`：管理后台登录框新增「Telegram 登录」按钮（官方 Login Widget）
 - `frontend/src/store/index.js` / `api/index.js`：`tgAuth` 状态 + 请求自动带 `x-tg-auth` 头
-- `worker/src/i18n/type.ts|en.ts|zh.ts`：新增 `TgAuthDeniedMsg` 提示
+
+> ⚠️ `/telegram/*` 用户接口（TG 小程序绑定地址、网页用户功能）**未加群校验，保持公开**；群鉴权只作用于 `/admin/*`（含 `/admin/telegram/*`），避免破坏公开网页邮箱。
 
 ### 工作原理
 
