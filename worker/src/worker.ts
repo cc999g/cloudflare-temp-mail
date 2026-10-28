@@ -29,6 +29,40 @@ const API_PATHS = [
 	"/redeem_api/",
 ];
 
+// [自用定制] 管理员账户由环境变量管理：自动确保 ADMIN_USERNAME/ADMIN_PASSWORD 账户存在于 D1 并授予 admin 角色。
+// 修改 wrangler.toml 中的 ADMIN_USERNAME / ADMIN_PASSWORD 并重新部署即可更换管理员账号密码；
+// TG Bot 也统一使用该管理员账户（与网页登录账户一致）。
+const ensureAdminAccount = async (c: Context<HonoCustomType>): Promise<void> => {
+	const username = c.env.ADMIN_USERNAME;
+	const password = c.env.ADMIN_PASSWORD;
+	if (!username || !password) return;
+	try {
+		// 5 分钟节流，避免每次请求写库
+		const lastInit = await c.env.KV?.get('admin_account_init_at');
+		if (lastInit && Date.now() - parseInt(lastInit, 10) < 5 * 60 * 1000) return;
+		const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
+		const hashed = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+		await c.env.DB.prepare(
+			`INSERT INTO users (user_email, password, user_info) VALUES (?, ?, ?)
+			 ON CONFLICT(user_email) DO UPDATE SET password = excluded.password, user_info = excluded.user_info, updated_at = datetime('now')`
+		).bind(username, hashed, JSON.stringify({ email: username })).run();
+		await c.env.DB.prepare(
+			`INSERT INTO user_roles (user_id, role_text)
+			 SELECT id, ? FROM users WHERE user_email = ?
+			 ON CONFLICT(user_id) DO UPDATE SET role_text = excluded.role_text, updated_at = datetime('now')`
+		).bind('admin', username).run();
+		// [自用定制] 历史 TG 自动账户（tg_xxx）不再授予 admin：bot 只绑定环境变量指定的唯一管理员账户
+		await c.env.DB.prepare(
+			`DELETE FROM user_roles WHERE user_id IN (
+				SELECT id FROM users WHERE user_email LIKE 'tg_%'
+			)`
+		).run();
+		await c.env.KV?.put('admin_account_init_at', Date.now().toString());
+	} catch (e) {
+		console.error('ensureAdminAccount failed:', e);
+	}
+};
+
 const app = new Hono<HonoCustomType>()
 //cors
 app.use('/*', cors());
@@ -39,6 +73,9 @@ app.onError((err, c) => {
 })
 // global middlewares
 app.use('/*', async (c, next) => {
+
+	// [自用定制] 确保环境变量配置的管理员账户存在
+	await ensureAdminAccount(c);
 
 	// check if the request is for static files
 	if (c.env.ASSETS && !API_PATHS.some(path => c.req.path.startsWith(path))) {

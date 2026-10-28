@@ -50,6 +50,8 @@ type Bindings = {
     DOMAIN_LABELS: string | string[] | undefined
     PASSWORDS: string | string[] | undefined
     ADMIN_PASSWORDS: string | string[] | undefined
+    ADMIN_USERNAME: string | undefined
+    ADMIN_PASSWORD: string | undefined
     ADMIN_API_IP_WHITELIST: string | string[] | undefined
     DISABLE_ADMIN_PASSWORD_CHECK: string | boolean | undefined
     JWT_SECRET: string

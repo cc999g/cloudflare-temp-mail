@@ -132,26 +132,6 @@ export const getTelegramCommands = (c: Context<HonoCustomType>) => {
         : COMMANDS.filter(cmd => cmd.command !== "lang");
 }
 
-// [自用定制] TG Bot 绑定的账号默认管理员：
-// 每个通过 TG Bot 私聊交互的用户，自动在 users 表映射为 tg_<userId> 账户，并默认授予 admin 角色。
-const ensureTelegramUserAdmin = async (c: Context<HonoCustomType>, userId: string): Promise<void> => {
-    const userEmail = `tg_${userId}`;
-    // 随机占位密码（TG 用户不通过网页密码登录，仅用于满足非空约束）
-    const randomBytes = new Uint8Array(32);
-    crypto.getRandomValues(randomBytes);
-    const randomPassword = Array.from(randomBytes, b => b.toString(16).padStart(2, '0')).join('');
-    const userInfo = JSON.stringify({ email: userEmail });
-    await c.env.DB.prepare(
-        `INSERT INTO users (user_email, password, user_info) VALUES (?, ?, ?)
-         ON CONFLICT(user_email) DO UPDATE SET updated_at = datetime('now')`
-    ).bind(userEmail, randomPassword, userInfo).run();
-    await c.env.DB.prepare(
-        `INSERT INTO user_roles (user_id, role_text)
-         SELECT id, ? FROM users WHERE user_email = ?
-         ON CONFLICT(user_id) DO UPDATE SET role_text = excluded.role_text, updated_at = datetime('now')`
-    ).bind('admin', userEmail).run();
-}
-
 // [自用定制] Inline 键盘菜单：主菜单 + 邮箱二级子菜单（自用 bot，按钮文案使用中文+emoji）
 const MENU_WEB_URL = 'https://mail.yccm.de5.net';
 
@@ -190,8 +170,6 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
             return await ctx.reply(msgs.TgNoPermissionMsg);
         }
         try {
-            // [自用定制] TG 用户默认映射为管理员账号
-            await ensureTelegramUserAdmin(c, userId.toString());
             await next();
         } catch (error) {
             console.error(`Error: ${error}`);
@@ -492,10 +470,22 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
             if (data === "btn:new") {
                 try {
                     const res = await tgUserNewAddress(c, userId, "", msgs);
+                    // [自用定制] bot 创建的邮箱统一绑定到网页 admin 账户（bot 账户=网页登录账户）
+                    if (c.env.ADMIN_USERNAME && (res as any).address_id) {
+                        const adminUser = await c.env.DB.prepare(
+                            `SELECT id FROM users WHERE user_email = ?`
+                        ).bind(c.env.ADMIN_USERNAME).first<{ id: number }>();
+                        if (adminUser?.id) {
+                            await c.env.DB.prepare(
+                                `INSERT OR IGNORE INTO users_address (user_id, address_id) VALUES (?, ?)`
+                            ).bind(adminUser.id, (res as any).address_id).run();
+                        }
+                    }
                     await ctx.editMessageText(
                         `${msgs.TgCreateSuccessMsg}\n`
                         + `${msgs.TgAddressMsg} ${res.address}\n`
                         + (res.password ? `${msgs.TgPasswordMsg} \`${res.password}\`\n` : '')
+                        + (c.env.ADMIN_USERNAME ? `👤 已绑定账户: \`${c.env.ADMIN_USERNAME}\`\n` : '')
                         + `${msgs.TgCredentialMsg} \`${res.jwt}\``,
                         { ...Markup.inlineKeyboard([[backToMenuButton()]]), parse_mode: "Markdown" }
                     );
