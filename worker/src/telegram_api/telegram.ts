@@ -131,6 +131,26 @@ export const getTelegramCommands = (c: Context<HonoCustomType>) => {
         : COMMANDS.filter(cmd => cmd.command !== "lang");
 }
 
+// [自用定制] TG Bot 绑定的账号默认管理员：
+// 每个通过 TG Bot 私聊交互的用户，自动在 users 表映射为 tg_<userId> 账户，并默认授予 admin 角色。
+const ensureTelegramUserAdmin = async (c: Context<HonoCustomType>, userId: string): Promise<void> => {
+    const userEmail = `tg_${userId}`;
+    // 随机占位密码（TG 用户不通过网页密码登录，仅用于满足非空约束）
+    const randomBytes = new Uint8Array(32);
+    crypto.getRandomValues(randomBytes);
+    const randomPassword = Array.from(randomBytes, b => b.toString(16).padStart(2, '0')).join('');
+    const userInfo = JSON.stringify({ email: userEmail });
+    await c.env.DB.prepare(
+        `INSERT INTO users (user_email, password, user_info) VALUES (?, ?, ?)
+         ON CONFLICT(user_email) DO UPDATE SET updated_at = datetime('now')`
+    ).bind(userEmail, randomPassword, userInfo).run();
+    await c.env.DB.prepare(
+        `INSERT INTO user_roles (user_id, role_text)
+         SELECT id, ? FROM users WHERE user_email = ?
+         ON CONFLICT(user_id) DO UPDATE SET role_text = excluded.role_text, updated_at = datetime('now')`
+    ).bind('admin', userEmail).run();
+}
+
 export function newTelegramBot(c: Context<HonoCustomType>, token: string): Telegraf {
     const bot = new Telegraf(token);
     const botInfo = getJsonObjectValue<UserFromGetMe>(c.env.TG_BOT_INFO);
@@ -158,6 +178,8 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
             return await ctx.reply(msgs.TgNoPermissionMsg);
         }
         try {
+            // [自用定制] TG 用户默认映射为管理员账号
+            await ensureTelegramUserAdmin(c, userId.toString());
             await next();
         } catch (error) {
             console.error(`Error: ${error}`);
