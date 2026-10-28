@@ -83,9 +83,11 @@ export const useGlobalState = createGlobalState(
         const showAuth = ref(false);
         const showAddressCredential = ref(false);
         const showAdminAuth = ref(false);
-        const auth = useStorage('auth', '');
-        const adminAuth = useStorage('adminAuth', '');
-        const jwt = useStorage('jwt', '');
+        // [自用定制] 登录凭证一律使用 sessionStorage：关闭浏览器/标签页后失效，
+        // 下次打开必须重新输入账户密码登录，不长期记住凭证。
+        const auth = useSessionStorage('auth', '');
+        const adminAuth = useSessionStorage('adminAuth', '');
+        const jwt = useSessionStorage('jwt', '');
         const addressPassword = useSessionStorage('addressPassword', '');
         const adminTab = useSessionStorage('adminTab', "account");
         const adminMailTabAddress = ref("");
@@ -95,7 +97,7 @@ export const useGlobalState = createGlobalState(
         const mailListPreviewLineClamp = useStorage('mailListPreviewLineClamp', 1);
         const useIframeShowMail = useStorage('useIframeShowMail', false);
         const preferShowTextMail = useStorage('preferShowTextMail', false);
-        const userJwt = useStorage('userJwt', '');
+        const userJwt = useSessionStorage('userJwt', '');
         const preferredLocale = useStorage('preferredLocale', '');
         const userTab = useSessionStorage('userTab', 'address_management');
         const indexTab = useSessionStorage('indexTab', 'mailbox');

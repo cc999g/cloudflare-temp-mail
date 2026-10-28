@@ -14,12 +14,13 @@ import {
 import { useGlobalState } from '../../store'
 import { api } from '../../api'
 import Login from '../common/Login.vue'
+import UserLogin from '../user/UserLogin.vue'
 import AccountSettings from './AccountSettings.vue'
 import { processItem } from '../../utils/email-parser'
 import MailContentRenderer from '../../components/MailContentRenderer.vue'
 import AddressSelect from '../../components/AddressSelect.vue'
 
-const { jwt, settings, useSimpleIndex, showAddressCredential, openSettings, loading } = useGlobalState()
+const { jwt, settings, useSimpleIndex, showAddressCredential, openSettings, loading, userJwt } = useGlobalState()
 const message = useMessage()
 
 // 邮件数据
@@ -148,7 +149,9 @@ onBeforeUnmount(() => {
     <div class="center">
         <div v-if="!settings.address">
             <n-card :bordered="false" embedded>
-                <Login />
+                <!-- [自用定制] 未登录时强制账户密码登录，登录后才可新建邮箱 -->
+                <UserLogin v-if="!userJwt" />
+                <Login v-else />
             </n-card>
         </div>
 

@@ -1,33 +1,24 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useScopedI18n } from '@/i18n/app'
-import { useRouter } from 'vue-router'
-import { User, ExchangeAlt } from '@vicons/fa'
+import { ExchangeAlt } from '@vicons/fa'
 
 import { useGlobalState } from '../../store'
 import { api } from '../../api'
-import Login from '../common/Login.vue'
+import UserLogin from '../user/UserLogin.vue'
 import TelegramAddress from './TelegramAddress.vue'
-import LocalAddress from './LocalAddress.vue'
 import AddressManagement from '../user/AddressManagement.vue'
-import { getRouterPathWithLang } from '../../utils'
 import AddressSelect from '../../components/AddressSelect.vue'
 import AddressCredentialModal from '../../components/AddressCredentialModal.vue'
-
-const router = useRouter()
 
 const {
     jwt, settings, showAddressCredential, userJwt,
     isTelegram, addressPassword
 } = useGlobalState()
 
-const { locale, t } = useScopedI18n('views.index.AddressBar')
+const { t } = useScopedI18n('views.index.AddressBar')
 
 const showAddressManage = ref(false)
-
-const onUserLogin = async () => {
-    await router.push(getRouterPathWithLang("/user", locale.value))
-}
 
 onMounted(async () => {
     await api.getSettings();
@@ -65,14 +56,8 @@ onMounted(async () => {
                 <n-alert v-if="jwt" type="warning" :show-icon="false" :bordered="false" closable>
                     <span>{{ t('fetchAddressError') }}</span>
                 </n-alert>
-                <Login />
-                <n-divider />
-                <n-button @click="onUserLogin" type="primary" block secondary strong>
-                    <template #icon>
-                        <n-icon :component="User" />
-                    </template>
-                    {{ t('userCenter') }}
-                </n-button>
+                <!-- [自用定制] 不再提供匿名凭证登录/匿名新建邮箱，统一走账户密码登录 -->
+                <UserLogin />
             </n-card>
         </div>
         <AddressCredentialModal v-model:show="showAddressCredential" :address="settings.address" :jwt="jwt"
@@ -81,7 +66,7 @@ onMounted(async () => {
             style="width: 720px;">
             <TelegramAddress v-if="isTelegram" />
             <AddressManagement v-else-if="userJwt" />
-            <LocalAddress v-else />
+            <UserLogin v-else />
         </n-modal>
     </div>
 </template>

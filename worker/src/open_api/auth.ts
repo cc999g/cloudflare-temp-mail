@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import { verifyAddressToken } from '../address_auth';
 
 import utils, { checkCfTurnstile, getPasswords, getAdminPasswords, hashPassword } from '../utils';
 import i18n from '../i18n';
@@ -44,24 +43,10 @@ api.post('/open_api/admin_login', async (c) => {
 })
 
 api.post('/open_api/credential_login', async (c) => {
-    const { credential, cf_token } = await c.req.json();
     const msgs = i18n.getMessagesbyContext(c);
-    if (utils.isGlobalTurnstileEnabled(c)) {
-        try {
-            await checkCfTurnstile(c, cf_token);
-        } catch (error) {
-            return c.text(msgs.TurnstileCheckFailedMsg, 400)
-        }
-    }
-    if (!credential) {
-        return c.text(msgs.InvalidAddressCredentialMsg, 401)
-    }
-    try {
-        await verifyAddressToken(c, credential);
-    } catch (error) {
-        return c.text(msgs.InvalidAddressCredentialMsg, 401)
-    }
-    return c.json({ success: true })
+    // [自用定制] 关闭地址凭证登录：统一改为账户密码登录。
+    // 地址凭证仅用于已登录用户在其绑定邮箱间切换（/user_api/bind_address_jwt 内部链路）。
+    return c.json({ code: ErrorCode.AUTH_SITE_PASSWORD_INVALID, message: msgs.CustomAuthPasswordMsg }, 403)
 })
 
 export { api }

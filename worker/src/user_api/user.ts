@@ -69,6 +69,9 @@ export default {
         })
     },
     register: async (c: Context<HonoCustomType>) => {
+        // [自用定制] 关闭用户自助注册：仅允许管理员在后台创建账户并设定密码。
+        // 原自助注册实现保留在下方（不可达），如需恢复请删除本返回语句。
+        return c.text(i18n.getMessagesbyContext(c).UserRegistrationDisabledMsg, 403);
         const value = await getJsonSetting(c, CONSTANTS.USER_SETTINGS_KEY);
         const settings = new UserSettings(value)
         const msgs = i18n.getMessagesbyContext(c);

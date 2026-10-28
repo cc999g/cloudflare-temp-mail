@@ -158,6 +158,11 @@ const checkoutUserRolePayload = async (
 app.use('/api/*', async (c, next) => {
 	if (c.req.path.startsWith("/api/new_address")) {
 		await checkUserPayload(c);
+		// [自用定制] 创建邮箱必须账户登录（取消匿名创建与匿名凭证登录）
+		if (!c.get("userPayload")) {
+			const msgs = i18n.getMessagesbyContext(c);
+			return c.text(msgs.UserTokenExpiredMsg, 401)
+		}
 		await next();
 		return;
 	}

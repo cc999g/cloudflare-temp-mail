@@ -2,14 +2,14 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useScopedI18n } from '@/i18n/app'
 import { useRouter } from 'vue-router'
-import { NewLabelOutlined, EmailOutlined, RedeemOutlined } from '@vicons/material'
+import { NewLabelOutlined, RedeemOutlined } from '@vicons/material'
 
 import AdminContact from '../common/AdminContact.vue'
 import Turnstile from '../../components/Turnstile.vue'
 
 import { useGlobalState } from '../../store'
 import { api } from '../../api'
-import { getRouterPathWithLang, hashPassword } from '../../utils'
+import { getRouterPathWithLang } from '../../utils'
 
 const props = defineProps({
     bindUserAddress: {
@@ -43,92 +43,17 @@ const {
     showAddressCredential, userSettings, addressPassword
 } = useGlobalState()
 
-const tabValue = ref('signin')
-const credential = ref('')
+const tabValue = ref('register')
 const emailName = ref("")
 const emailDomain = ref("")
 const cfToken = ref("")
 const subdomainMode = ref("normal")
 const customSubdomain = ref("")
-const loginCfToken = ref("")
-const loginTurnstileRef = ref(null)
-const loginMethod = ref('credential') // 'credential' or 'password'
-const loginAddress = ref('')
-const loginPassword = ref('')
 
-// 根据 openSettings 初始化登录方式
-const initLoginMethod = () => {
-    if (openSettings.value?.enableAddressPassword) {
-        loginMethod.value = 'password';
-    } else {
-        loginMethod.value = 'credential';
-    }
-}
-
-const login = async () => {
-    if (loginMethod.value === 'password') {
-        // Password login
-        if (!loginAddress.value || !loginPassword.value) {
-            message.error(t('emailPasswordRequired'));
-            return;
-        }
-        try {
-            const res = await api.fetch('/api/address_login', {
-                method: 'POST',
-                body: JSON.stringify({
-                    email: loginAddress.value,
-                    password: await hashPassword(loginPassword.value),
-                    cf_token: loginCfToken.value
-                })
-            });
-            jwt.value = res.jwt;
-            await api.getSettings();
-            try {
-                await props.bindUserAddress();
-            } catch (error) {
-                message.error(`${t('bindUserAddressError')}: ${error.message}`);
-            }
-            await router.push(getRouterPathWithLang("/", locale.value));
-        } catch (error) {
-            message.error(error.message || "error");
-            loginTurnstileRef.value?.refresh?.();
-        }
-        return;
-    }
-    if (!credential.value) {
-        message.error(t('credentialInput'));
-        return;
-    }
-    try {
-        await api.fetch('/open_api/credential_login', {
-            method: 'POST',
-            body: JSON.stringify({
-                credential: credential.value,
-                cf_token: loginCfToken.value
-            })
-        });
-        jwt.value = credential.value;
-        await api.getSettings();
-        try {
-            await props.bindUserAddress();
-        } catch (error) {
-            message.error(`${t('bindUserAddressError')}: ${error.message}`);
-        }
-        await router.push(getRouterPathWithLang("/", locale.value));
-    } catch (error) {
-        message.error(error.message || "error");
-        loginTurnstileRef.value?.refresh?.();
-    }
-}
+// [自用定制] 已移除凭证登录/地址密码登录（login/credential_login），
+// 本组件仅用于已登录用户新建邮箱。
 
 const { locale, t } = useScopedI18n('views.common.Login')
-
-const loginAndBindTag = computed(() => {
-    if (userSettings.value.user_email) {
-        return t('loginAndBind')
-    }
-    return t('login')
-})
 
 const addressRegex = computed(() => {
     try {
@@ -251,7 +176,6 @@ onMounted(async () => {
         await api.getOpenSettings(message, notification);
     }
     emailDomain.value = domainsOptions.value ? domainsOptions.value[0]?.value : "";
-    initLoginMethod();
 });
 </script>
 
@@ -261,59 +185,7 @@ onMounted(async () => {
             <span>{{ t('bindUserInfo') }}</span>
         </n-alert>
         <n-tabs v-if="openSettings.fetched" v-model:value="tabValue" size="large" justify-content="space-evenly">
-            <n-tab-pane name="signin" :tab="loginAndBindTag">
-                <n-form>
-                    <div v-if="loginMethod === 'password'">
-                        <n-form-item-row :label="t('email')" required>
-                            <n-input v-model:value="loginAddress" />
-                        </n-form-item-row>
-                        <n-form-item-row :label="t('password')" required>
-                            <n-input v-model:value="loginPassword" type="password" show-password-on="click"
-                                @keyup.enter="login" />
-                        </n-form-item-row>
-                    </div>
-
-                    <div v-else>
-                        <n-form-item-row :label="t('credential')" required>
-                            <n-input v-model:value="credential" type="textarea" :autosize="{ minRows: 3 }" />
-                        </n-form-item-row>
-                    </div>
-
-                    <Turnstile ref="loginTurnstileRef" v-if="openSettings.enableGlobalTurnstileCheck"
-                        v-model:value="loginCfToken" />
-
-                    <div class="switch-login-button">
-                        <n-button v-if="openSettings?.enableAddressPassword"
-                            @click="loginMethod === 'password' ? loginMethod = 'credential' : loginMethod = 'password'"
-                            type="info" quaternary size="tiny">
-                            {{ loginMethod === 'password' ? t('credentialLogin') : t('passwordLogin') }}
-                        </n-button>
-                    </div>
-
-                    <n-button @click="login" :loading="loading" type="primary" block secondary strong>
-                        <template #icon>
-                            <n-icon :component="EmailOutlined" />
-                        </template>
-                        {{ loginAndBindTag }}
-                    </n-button>
-                    <n-button v-if="showNewAddressTab" @click="tabValue = 'register'" block secondary strong>
-                        <template #icon>
-                            <n-icon :component="NewLabelOutlined" />
-                        </template>
-                        {{ t('getNewEmail') }}
-                    </n-button>
-                    <div v-if="openSettings.enableRedeemCode" class="redeem-entry-section">
-                        <n-divider />
-                        <n-text type="info" class="redeem-entry-tip">{{ t('redeemEntryTip') }}</n-text>
-                        <n-button data-testid="redeem-entry" block secondary strong @click="openRedeemPage">
-                            <template #icon>
-                                <n-icon :component="RedeemOutlined" />
-                            </template>
-                            {{ t('useRedeemCode') }}
-                        </n-button>
-                    </div>
-                </n-form>
-            </n-tab-pane>
+            <!-- [自用定制] 已移除凭证登录/地址密码登录 tab，仅保留新建邮箱 -->
             <n-tab-pane v-if="showNewAddressTab" name="register" :tab="t('getNewEmail')">
                 <n-spin :show="generateNameLoading">
                     <n-form>
