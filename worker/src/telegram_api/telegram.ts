@@ -4,11 +4,12 @@ import { Telegraf, Context as TgContext, Markup } from "telegraf";
 import { callbackQuery } from "telegraf/filters";
 
 import { CONSTANTS } from "../constants";
-import { getBooleanValue, getDomains, getIntValue, getJsonObjectValue, trimLower, htmlToText } from '../utils';
+import { getBooleanValue, getDomains, getJsonObjectValue, trimLower, htmlToText } from '../utils';
 import { TelegramSettings } from "./settings";
 import { sendTelegramAttachments } from "./tg_file_upload";
 import { bindTelegramAddress, deleteTelegramAddress, jwtListToAddressData, tgUserNewAddress, unbindTelegramAddress, unbindTelegramByAddress } from "./common";
 import { commonParseMail } from "../common";
+import { deleteAddressWithData } from "../common";
 import { resolveRawEmail } from "../gzip";
 import { UserFromGetMe } from "telegraf/types";
 import i18n from "../i18n";
@@ -373,18 +374,20 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
         if (!userId) {
             return await ctx.reply(msgs.TgUnableGetUserInfoMsg);
         }
-        const jwtList = await c.env.KV.get<string[]>(`${CONSTANTS.TG_KV_PREFIX}:${userId}`, 'json') || [];
-        const { addressList, addressIdMap } = await jwtListToAddressData(c, jwtList, msgs);
-        if (!queryAddress && addressList.length > 0) {
-            queryAddress = addressList[0];
+        // [自用定制] 管理员视角：未指定地址时默认查看全站最新邮件的邮箱
+        if (!queryAddress) {
+            const latest = await c.env.DB.prepare(
+                `SELECT address FROM raw_mails ORDER BY id DESC LIMIT 1`
+            ).first<string>("address");
+            queryAddress = latest || "";
         }
-        if (!(queryAddress in addressIdMap)) {
-            return await ctx.reply(`${msgs.TgNotBoundAddressMsg} ${queryAddress}`);
+        if (!queryAddress) {
+            return await ctx.reply('📭 暂无任何邮件');
         }
-        const address_id = addressIdMap[queryAddress];
+        // 校验地址存在（TG 用户均为管理员，可查看任意邮箱，不再要求归属）
         const db_address_id = await c.env.DB.prepare(
-            `SELECT id FROM address where id = ? `
-        ).bind(address_id).first("id");
+            `SELECT id FROM address where name = ? `
+        ).bind(queryAddress).first("id");
         if (!db_address_id) {
             return await ctx.reply(msgs.TgInvalidAddressMsg);
         }
@@ -443,23 +446,38 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
     });
 
     // [自用定制] Inline 键盘菜单：主菜单/二级子菜单回调分发
-    const renderAddressList = async (ctx: TgContext, msgs: LocaleMessages): Promise<void> => {
-        const userId = ctx.callbackQuery?.from?.id;
-        const jwtList = await c.env.KV.get<string[]>(`${CONSTANTS.TG_KV_PREFIX}:${userId}`, 'json') || [];
-        const { addressList, addressIdMap } = await jwtListToAddressData(c, jwtList, msgs);
-        const lines = addressList.map((addr, i) => `${i + 1}. ${addr}`).join("\n");
-        const maxCount = getIntValue(c.env.TG_MAX_ADDRESS, 5);
-        const keyboard = Markup.inlineKeyboard([
-            ...addressList.map(addr => [
-                Markup.button.callback('📬 查看', `v${addressIdMap[addr]}`),
-                Markup.button.callback('🗑 删除', `d${addressIdMap[addr]}`),
-            ]),
-            [Markup.button.callback('📮 新建邮箱', 'btn:new'), backToMenuButton()],
-        ]);
-        const text = `${msgs.TgAddressListMsg}\n\n`
-            + (lines || '（暂无邮箱，点下方按钮新建）')
-            + `\n\n共 ${addressList.length}/${maxCount} 个邮箱`;
-        await ctx.editMessageText(text, { ...keyboard });
+    // 管理员视角：列出全站所有邮箱（分页，每页 10 条）
+    const renderAddressList = async (ctx: TgContext, msgs: LocaleMessages, offset: number = 0): Promise<void> => {
+        const pageSize = 10;
+        const totalRow = await c.env.DB.prepare(
+            `SELECT COUNT(*) as cnt FROM address`
+        ).first<{ cnt: number }>();
+        const total = totalRow?.cnt || 0;
+        const rows = await c.env.DB.prepare(
+            `SELECT id, name FROM address ORDER BY id DESC LIMIT ? OFFSET ?`
+        ).bind(pageSize, offset).all<{ id: number; name: string }>();
+        const lines = (rows.results || []).map((r, i) => `${offset + i + 1}. ${r.name}`).join("\n");
+        const keyboardRows: ReturnType<typeof Markup.button.callback>[][] = [];
+        for (const r of rows.results || []) {
+            keyboardRows.push([
+                Markup.button.callback('📬 查看', `v${r.id}`),
+                Markup.button.callback('🗑 删除', `d${r.id}`),
+            ]);
+        }
+        const navRow: ReturnType<typeof Markup.button.callback>[] = [];
+        if (offset > 0) {
+            navRow.push(Markup.button.callback('⬅️ 上一页', `btn:list:p${Math.max(0, offset - pageSize)}`));
+        }
+        if (offset + pageSize < total) {
+            navRow.push(Markup.button.callback('下一页 ➡️', `btn:list:p${offset + pageSize}`));
+        }
+        if (navRow.length) keyboardRows.push(navRow);
+        keyboardRows.push([Markup.button.callback('📮 新建邮箱', 'btn:new'), backToMenuButton()]);
+        const start = total === 0 ? 0 : offset + 1;
+        const end = Math.min(offset + pageSize, total);
+        const text = `📋 全部邮箱列表（共 ${total} 个${total > 0 ? `，显示 ${start}-${end}` : ''}）：\n\n`
+            + (lines || '（暂无邮箱，点下方按钮新建）');
+        await ctx.editMessageText(text, { ...Markup.inlineKeyboard(keyboardRows) });
     };
 
     bot.on(callbackQuery("data"), async ctx => {
@@ -487,9 +505,15 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                 }
                 return await ctx.answerCbQuery();
             }
-            // 主菜单：邮箱列表（二级子菜单）
+            // 主菜单：邮箱列表（二级子菜单，全站管理员视角）
             if (data === "btn:list") {
-                await renderAddressList(ctx, msgs);
+                await renderAddressList(ctx, msgs, 0);
+                return await ctx.answerCbQuery();
+            }
+            // 列表分页
+            if (data.startsWith("btn:list:p")) {
+                const offset = parseInt(data.slice("btn:list:p".length) || "0", 10) || 0;
+                await renderAddressList(ctx, msgs, offset);
                 return await ctx.answerCbQuery();
             }
             // 主菜单：最新邮件
@@ -505,7 +529,7 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                 );
                 return await ctx.answerCbQuery();
             }
-            // 二级子菜单：查看 / 删除指定邮箱（v<id> / d<id>）
+            // 二级子菜单：查看 / 删除指定邮箱（v<id> / d<id>，管理员可操作全站任意邮箱）
             if (data.startsWith("v") || data.startsWith("d")) {
                 const action = data[0];
                 const addressId = data.slice(1);
@@ -516,18 +540,12 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                     return await ctx.answerCbQuery(msgs.TgInvalidAddressMsg);
                 }
                 const address = row.name;
-                // 校验该邮箱属于当前 TG 用户
-                const jwtList = await c.env.KV.get<string[]>(`${CONSTANTS.TG_KV_PREFIX}:${userId}`, 'json') || [];
-                const { addressIdMap } = await jwtListToAddressData(c, jwtList, msgs);
-                if (!(address in addressIdMap)) {
-                    return await ctx.answerCbQuery(msgs.TgNotBoundAddressMsg);
-                }
                 if (action === "v") {
                     await queryMail(ctx, address, 0, true);
                 } else {
-                    await deleteTelegramAddress(c, userId, address, msgs);
+                    await deleteAddressWithData(c, null, addressId);
                     await ctx.editMessageText(`${msgs.TgDeleteSuccessMsg} ${address}`);
-                    await renderAddressList(ctx, msgs);
+                    await renderAddressList(ctx, msgs, 0);
                 }
                 return await ctx.answerCbQuery();
             }
