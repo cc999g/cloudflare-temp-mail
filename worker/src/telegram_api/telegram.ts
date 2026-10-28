@@ -4,7 +4,7 @@ import { Telegraf, Context as TgContext, Markup } from "telegraf";
 import { callbackQuery } from "telegraf/filters";
 
 import { CONSTANTS } from "../constants";
-import { getBooleanValue, getDomains, getJsonObjectValue, trimLower, htmlToText } from '../utils';
+import { getBooleanValue, getDomains, getIntValue, getJsonObjectValue, trimLower, htmlToText } from '../utils';
 import { TelegramSettings } from "./settings";
 import { sendTelegramAttachments } from "./tg_file_upload";
 import { bindTelegramAddress, deleteTelegramAddress, jwtListToAddressData, tgUserNewAddress, unbindTelegramAddress, unbindTelegramByAddress } from "./common";
@@ -151,6 +151,17 @@ const ensureTelegramUserAdmin = async (c: Context<HonoCustomType>, userId: strin
     ).bind('admin', userEmail).run();
 }
 
+// [自用定制] Inline 键盘菜单：主菜单 + 邮箱二级子菜单（自用 bot，按钮文案使用中文+emoji）
+const MENU_WEB_URL = 'https://mail.yccm.de5.net';
+
+const mainMenuKeyboard = () => Markup.inlineKeyboard([
+    [Markup.button.callback('📮 新建邮箱', 'btn:new')],
+    [Markup.button.callback('📋 邮箱列表', 'btn:list'), Markup.button.callback('📥 最新邮件', 'btn:inbox')],
+    [Markup.button.url('🌐 网页后台', MENU_WEB_URL)],
+]);
+
+const backToMenuButton = () => Markup.button.callback('🔙 返回菜单', 'btn:menu');
+
 export function newTelegramBot(c: Context<HonoCustomType>, token: string): Telegraf {
     const bot = new Telegraf(token);
     const botInfo = getJsonObjectValue<UserFromGetMe>(c.env.TG_BOT_INFO);
@@ -197,7 +208,9 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
             + (prefix ? `${msgs.TgCurrentPrefixMsg} ${prefix}\n` : '')
             + `${msgs.TgCurrentDomainsMsg} ${JSON.stringify(domains)}\n`
             + `${msgs.TgAvailableCommandsMsg}\n`
-            + commands.map(cmd => `/${cmd.command}: ${cmd.description}`).join("\n")
+            + commands.map(cmd => `/${cmd.command}: ${cmd.description}`).join("\n"),
+            // [自用定制] 附带 Inline 按键主菜单
+            { ...mainMenuKeyboard() }
         );
     });
 
@@ -402,6 +415,7 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                         Markup.button.callback(msgs.TgPrevBtnMsg, `mail_${queryAddress}_${mailIndex - 1}`, mailIndex <= 0),
                         ...miniAppButtons,
                         Markup.button.callback(msgs.TgNextBtnMsg, `mail_${queryAddress}_${mailIndex + 1}`, !raw),
+                        backToMenuButton(),
                     ])
                 },
             );
@@ -412,6 +426,7 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                     Markup.button.callback(msgs.TgPrevBtnMsg, `mail_${queryAddress}_${mailIndex - 1}`, mailIndex <= 0),
                     ...miniAppButtons,
                     Markup.button.callback(msgs.TgNextBtnMsg, `mail_${queryAddress}_${mailIndex + 1}`, !raw),
+                    backToMenuButton(),
                 ])
             },
         );
@@ -427,21 +442,107 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
         }
     });
 
+    // [自用定制] Inline 键盘菜单：主菜单/二级子菜单回调分发
+    const renderAddressList = async (ctx: TgContext, msgs: LocaleMessages): Promise<void> => {
+        const userId = ctx.callbackQuery?.from?.id;
+        const jwtList = await c.env.KV.get<string[]>(`${CONSTANTS.TG_KV_PREFIX}:${userId}`, 'json') || [];
+        const { addressList, addressIdMap } = await jwtListToAddressData(c, jwtList, msgs);
+        const lines = addressList.map((addr, i) => `${i + 1}. ${addr}`).join("\n");
+        const maxCount = getIntValue(c.env.TG_MAX_ADDRESS, 5);
+        const keyboard = Markup.inlineKeyboard([
+            ...addressList.map(addr => [
+                Markup.button.callback('📬 查看', `v${addressIdMap[addr]}`),
+                Markup.button.callback('🗑 删除', `d${addressIdMap[addr]}`),
+            ]),
+            [Markup.button.callback('📮 新建邮箱', 'btn:new'), backToMenuButton()],
+        ]);
+        const text = `${msgs.TgAddressListMsg}\n\n`
+            + (lines || '（暂无邮箱，点下方按钮新建）')
+            + `\n\n共 ${addressList.length}/${maxCount} 个邮箱`;
+        await ctx.editMessageText(text, { ...keyboard });
+    };
+
     bot.on(callbackQuery("data"), async ctx => {
         const msgs = await getTgMessages(c, ctx);
-        // Use ctx.callbackQuery.data
         try {
             const data = ctx.callbackQuery.data;
-            if (data && data.startsWith("mail_") && data.split("_").length === 3) {
+            const userId = ctx.callbackQuery?.from?.id?.toString();
+            if (!data || !userId) {
+                return await ctx.answerCbQuery(msgs.TgUnableGetUserInfoMsg);
+            }
+            // 主菜单：新建邮箱
+            if (data === "btn:new") {
+                try {
+                    const res = await tgUserNewAddress(c, userId, "", msgs);
+                    await ctx.editMessageText(
+                        `${msgs.TgCreateSuccessMsg}\n`
+                        + `${msgs.TgAddressMsg} ${res.address}\n`
+                        + (res.password ? `${msgs.TgPasswordMsg} \`${res.password}\`\n` : '')
+                        + `${msgs.TgCredentialMsg} \`${res.jwt}\``,
+                        { ...Markup.inlineKeyboard([[backToMenuButton()]]), parse_mode: "Markdown" }
+                    );
+                } catch (e) {
+                    await ctx.editMessageText(`${msgs.TgCreateFailedMsg} ${(e as Error).message}`,
+                        { ...Markup.inlineKeyboard([[backToMenuButton()]]) });
+                }
+                return await ctx.answerCbQuery();
+            }
+            // 主菜单：邮箱列表（二级子菜单）
+            if (data === "btn:list") {
+                await renderAddressList(ctx, msgs);
+                return await ctx.answerCbQuery();
+            }
+            // 主菜单：最新邮件
+            if (data === "btn:inbox") {
+                await queryMail(ctx, "", 0, true);
+                return await ctx.answerCbQuery();
+            }
+            // 返回主菜单
+            if (data === "btn:menu") {
+                await ctx.editMessageText(
+                    `${msgs.TgWelcomeMsg}\n\n${msgs.TgAvailableCommandsMsg}`,
+                    { ...mainMenuKeyboard() }
+                );
+                return await ctx.answerCbQuery();
+            }
+            // 二级子菜单：查看 / 删除指定邮箱（v<id> / d<id>）
+            if (data.startsWith("v") || data.startsWith("d")) {
+                const action = data[0];
+                const addressId = data.slice(1);
+                const row = await c.env.DB.prepare(
+                    `SELECT name FROM address WHERE id = ?`
+                ).bind(addressId).first<{ name: string }>();
+                if (!row?.name) {
+                    return await ctx.answerCbQuery(msgs.TgInvalidAddressMsg);
+                }
+                const address = row.name;
+                // 校验该邮箱属于当前 TG 用户
+                const jwtList = await c.env.KV.get<string[]>(`${CONSTANTS.TG_KV_PREFIX}:${userId}`, 'json') || [];
+                const { addressIdMap } = await jwtListToAddressData(c, jwtList, msgs);
+                if (!(address in addressIdMap)) {
+                    return await ctx.answerCbQuery(msgs.TgNotBoundAddressMsg);
+                }
+                if (action === "v") {
+                    await queryMail(ctx, address, 0, true);
+                } else {
+                    await deleteTelegramAddress(c, userId, address, msgs);
+                    await ctx.editMessageText(`${msgs.TgDeleteSuccessMsg} ${address}`);
+                    await renderAddressList(ctx, msgs);
+                }
+                return await ctx.answerCbQuery();
+            }
+            // 原有翻页回调
+            if (data.startsWith("mail_") && data.split("_").length === 3) {
                 const [_, queryAddress, mailIndex] = data.split("_");
                 await queryMail(ctx, queryAddress, parseInt(mailIndex), true);
+                return await ctx.answerCbQuery();
             }
+            return await ctx.answerCbQuery();
         }
         catch (e) {
             console.log(`${msgs.TgGetMailFailedMsg} ${(e as Error).message}`, e);
             return await ctx.answerCbQuery(`${msgs.TgGetMailFailedMsg} ${(e as Error).message}`);
         }
-        await ctx.answerCbQuery();
     });
 
     return bot;
