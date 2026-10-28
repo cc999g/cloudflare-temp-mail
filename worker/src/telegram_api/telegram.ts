@@ -138,6 +138,7 @@ const MENU_WEB_URL = 'https://mail.yccm.de5.net';
 const mainMenuKeyboard = () => Markup.inlineKeyboard([
     [Markup.button.callback('📮 新建邮箱', 'btn:new')],
     [Markup.button.callback('📋 邮箱列表', 'btn:list'), Markup.button.callback('📥 最新邮件', 'btn:inbox')],
+    [Markup.button.callback('📧 邮件列表', 'btn:mails')],
     [Markup.button.url('🌐 网页后台', MENU_WEB_URL)],
 ]);
 
@@ -395,6 +396,7 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                     ...Markup.inlineKeyboard([
                         Markup.button.callback(msgs.TgPrevBtnMsg, `mail_${queryAddress}_${mailIndex - 1}`, mailIndex <= 0),
                         ...miniAppButtons,
+                        Markup.button.callback('🗑 删除该邮件', `dm${mailId}`, !mailId),
                         Markup.button.callback(msgs.TgNextBtnMsg, `mail_${queryAddress}_${mailIndex + 1}`, !raw),
                         backToMenuButton(),
                     ])
@@ -406,6 +408,7 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                 ...Markup.inlineKeyboard([
                     Markup.button.callback(msgs.TgPrevBtnMsg, `mail_${queryAddress}_${mailIndex - 1}`, mailIndex <= 0),
                     ...miniAppButtons,
+                    Markup.button.callback('🗑 删除该邮件', `dm${mailId}`, !mailId),
                     Markup.button.callback(msgs.TgNextBtnMsg, `mail_${queryAddress}_${mailIndex + 1}`, !raw),
                     backToMenuButton(),
                 ])
@@ -440,6 +443,7 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
             keyboardRows.push([
                 Markup.button.callback('📬 查看', `v${r.id}`),
                 Markup.button.callback('🗑 删除', `d${r.id}`),
+                Markup.button.callback('📧 邮件', `lm${r.id}`),
             ]);
         }
         const navRow: ReturnType<typeof Markup.button.callback>[] = [];
@@ -455,6 +459,74 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
         const end = Math.min(offset + pageSize, total);
         const text = `📋 全部邮箱列表（共 ${total} 个${total > 0 ? `，显示 ${start}-${end}` : ''}）：\n\n`
             + (lines || '（暂无邮箱，点下方按钮新建）');
+        await ctx.editMessageText(text, { ...Markup.inlineKeyboard(keyboardRows) });
+    };
+
+    // 解码 RFC2047 encoded-word 主题（=?UTF-8?B?...?= / =?UTF-8?Q?...?=）
+    const decodeMimeWord = (s: string): string => {
+        try {
+            return s.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_m, _cs, enc, body) => {
+                if (enc.toLowerCase() === 'b') {
+                    return Buffer.from(body, 'base64').toString('utf-8');
+                }
+                return body.replace(/=([0-9A-Fa-f]{2})/g, (_h, hex) => String.fromCharCode(parseInt(hex, 16)));
+            });
+        } catch {
+            return s;
+        }
+    };
+
+    // [自用定制] 邮件列表：全部邮件 / 指定邮箱，每页 10 封
+    const renderMailList = async (ctx: TgContext, msgs: LocaleMessages, mode: 'all' | number, offset: number = 0): Promise<void> => {
+        const pageSize = 10;
+        let total = 0;
+        let rows;
+        let modeLabel = '全部邮箱';
+        if (mode === 'all') {
+            const t = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM raw_mails`).first<{ cnt: number }>();
+            total = t?.cnt || 0;
+            rows = await c.env.DB.prepare(
+                `SELECT id, address, raw FROM raw_mails ORDER BY id DESC LIMIT ? OFFSET ?`
+            ).bind(pageSize, offset).all<{ id: number; address: string; raw: string }>();
+        } else {
+            const addr = await c.env.DB.prepare(`SELECT name FROM address WHERE id = ?`).bind(mode).first<{ name: string }>();
+            if (!addr?.name) {
+                await ctx.editMessageText('邮箱不存在');
+                return;
+            }
+            modeLabel = addr.name;
+            const t = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM raw_mails WHERE address = ?`).bind(addr.name).first<{ cnt: number }>();
+            total = t?.cnt || 0;
+            rows = await c.env.DB.prepare(
+                `SELECT id, address, raw FROM raw_mails WHERE address = ? ORDER BY id DESC LIMIT ? OFFSET ?`
+            ).bind(addr.name, pageSize, offset).all<{ id: number; address: string; raw: string }>();
+        }
+        const lines = (rows.results || []).map((r, i) => {
+            const sm = /^Subject:\s*(.*)$/m.exec(r.raw);
+            const subject = sm ? decodeMimeWord(sm[1].trim()).slice(0, 40) : '(无主题)';
+            return `${offset + i + 1}. 📮 ${r.address}\n   💬 ${subject}`;
+        }).join('\n\n');
+        const keyboardRows: ReturnType<typeof Markup.button.callback>[][] = [];
+        for (const r of rows.results || []) {
+            keyboardRows.push([Markup.button.callback('📄 查看', `m${r.id}`)]);
+        }
+        const navRow: ReturnType<typeof Markup.button.callback>[] = [];
+        if (offset > 0) {
+            navRow.push(Markup.button.callback('⬅️ 上一页', mode === 'all' ? `ml:p${Math.max(0, offset - pageSize)}` : `ma${mode}p${Math.max(0, offset - pageSize)}`));
+        }
+        if (offset + pageSize < total) {
+            navRow.push(Markup.button.callback('下一页 ➡️', mode === 'all' ? `ml:p${offset + pageSize}` : `ma${mode}p${offset + pageSize}`));
+        }
+        if (navRow.length) keyboardRows.push(navRow);
+        keyboardRows.push([
+            Markup.button.callback('📭 全部邮件', 'btn:mails'),
+            Markup.button.callback('📌 按邮箱筛选', 'btn:list'),
+            backToMenuButton(),
+        ]);
+        const start = total === 0 ? 0 : offset + 1;
+        const end = Math.min(offset + pageSize, total);
+        const text = `📧 邮件列表（${modeLabel}，共 ${total} 封${total > 0 ? `，显示 ${start}-${end}` : ''}）：\n\n`
+            + (lines || '（暂无邮件）');
         await ctx.editMessageText(text, { ...Markup.inlineKeyboard(keyboardRows) });
     };
 
@@ -518,6 +590,62 @@ export function newTelegramBot(c: Context<HonoCustomType>, token: string): Teleg
                     { ...mainMenuKeyboard() }
                 );
                 return await ctx.answerCbQuery();
+            }
+            // 主菜单：邮件列表（默认全部邮件）
+            if (data === "btn:mails") {
+                await renderMailList(ctx, msgs, 'all', 0);
+                return await ctx.answerCbQuery();
+            }
+            // 邮件列表分页：全部 / 指定邮箱
+            if (data.startsWith("ml:p")) {
+                const offset = parseInt(data.slice("ml:p".length) || "0", 10) || 0;
+                await renderMailList(ctx, msgs, 'all', offset);
+                return await ctx.answerCbQuery();
+            }
+            if (data.startsWith("lm")) {
+                const addressId = data.slice(2);
+                await renderMailList(ctx, msgs, parseInt(addressId, 10), 0);
+                return await ctx.answerCbQuery();
+            }
+            if (data.startsWith("ma") && data.includes("p")) {
+                const m = /^ma(\d+)p(\d+)$/.exec(data);
+                if (m) {
+                    await renderMailList(ctx, msgs, parseInt(m[1], 10), parseInt(m[2], 10) || 0);
+                    return await ctx.answerCbQuery();
+                }
+            }
+            // 查看单封邮件
+            if (/^m\d+$/.test(data)) {
+                const mailId = data.slice(1);
+                const row = await c.env.DB.prepare(
+                    `SELECT id, address, raw, created_at, metadata FROM raw_mails WHERE id = ?`
+                ).bind(mailId).first<RawMailRow>();
+                if (!row) {
+                    await ctx.editMessageText('邮件不存在或已删除',
+                        { ...Markup.inlineKeyboard([[Markup.button.callback('📧 邮件列表', 'btn:mails'), backToMenuButton()]]) });
+                    return await ctx.answerCbQuery();
+                }
+                const raw = await resolveRawEmail(row);
+                const { mail } = raw
+                    ? await parseMail(msgs, { rawEmail: raw }, row.address, row.created_at, row.metadata)
+                    : { mail: msgs.TgNoMoreMailsMsg };
+                await ctx.editMessageText(mail || msgs.TgNoMailMsg, {
+                    ...Markup.inlineKeyboard([
+                        [Markup.button.callback('🗑 删除该邮件', `dm${mailId}`)],
+                        [Markup.button.callback('📧 邮件列表', 'btn:mails'), backToMenuButton()],
+                    ])
+                });
+                return await ctx.answerCbQuery();
+            }
+            // 删除单封邮件
+            if (data.startsWith("dm")) {
+                const mailId = data.slice(2);
+                const del = await c.env.DB.prepare(`DELETE FROM raw_mails WHERE id = ?`).bind(mailId).run();
+                await ctx.answerCbQuery((del.meta?.changes ?? 0) > 0 ? '✅ 已删除该邮件' : '邮件不存在');
+                await ctx.editMessageText('🗑 已删除该邮件', {
+                    ...Markup.inlineKeyboard([[Markup.button.callback('📧 邮件列表', 'btn:mails'), backToMenuButton()]])
+                });
+                return;
             }
             // 二级子菜单：查看 / 删除指定邮箱（v<id> / d<id>，管理员可操作全站任意邮箱）
             if (data.startsWith("v") || data.startsWith("d")) {

@@ -57,6 +57,28 @@ const ensureAdminAccount = async (c: Context<HonoCustomType>): Promise<void> => 
 				SELECT id FROM users WHERE user_email LIKE 'tg_%'
 			)`
 		).run();
+		// [自用定制] 若管理员账户已改名：旧默认名 admin 不再保留管理员角色（保留为普通账户，避免历史绑定邮箱失效）
+		if (username !== 'admin') {
+			await c.env.DB.prepare(
+				`DELETE FROM user_roles WHERE user_id IN (
+					SELECT id FROM users WHERE user_email = 'admin'
+				)`
+			).run();
+			// 旧 admin 名下绑定的邮箱转移到新管理员名下（网页登录账户 = bot 账户，可看到全部邮箱）
+			await c.env.DB.prepare(
+				`UPDATE users_address SET user_id = (
+					SELECT id FROM users WHERE user_email = ?
+				) WHERE user_id IN (
+					SELECT id FROM users WHERE user_email = 'admin'
+				)`
+			).bind(username).run();
+		}
+		// [自用定制] Bot 历史创建的邮箱（source_meta='tg:%'，旧版仅 KV 绑定未写入账户表）统一绑定到当前管理员账户
+		await c.env.DB.prepare(
+			`INSERT OR IGNORE INTO users_address (user_id, address_id)
+			 SELECT (SELECT id FROM users WHERE user_email = ?), id
+			 FROM address WHERE source_meta LIKE 'tg:%'`
+		).bind(username).run();
 		await c.env.KV?.put('admin_account_init_at', Date.now().toString());
 	} catch (e) {
 		console.error('ensureAdminAccount failed:', e);
